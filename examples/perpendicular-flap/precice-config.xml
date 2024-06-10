@@ -49,14 +49,13 @@
 
   <coupling-scheme:parallel-implicit>
     <participants first="Fluid" second="Solid"/>
-    <time-window-size value="0.0025" />
+    <time-window-size value="0.002" />
     <max-time value="5.0" />
     <exchange data="ControlPointData" mesh="ControlPointMesh" from="Solid"   to="Fluid"/>
     <exchange data="ForceData"        mesh="ForceMesh"        from="Fluid"   to="Solid"  />
     <max-iterations value="30" />
     <relative-convergence-measure limit="1e-4" data="ControlPointData"  mesh="ControlPointMesh"/>
     <relative-convergence-measure limit="1e-4" data="ForceData"         mesh="ForceMesh"/>
-    <extrapolation-order value="2"/>
     <acceleration:IQN-ILS>
       <data name="ControlPointData" mesh="ControlPointMesh" />
       <data name="ForceData"        mesh="ForceMesh" />
