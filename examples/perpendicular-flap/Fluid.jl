@@ -4,6 +4,40 @@ using ParametricBodies
 using StaticArrays
 using Plots
 using WriteVTK
+include("../../src/Interface.jl")
+
+# overwrite the momentum function so that we get the correct BC
+@fastmath function WaterLily.mom_step!(a::Flow,b::AbstractPoisson)
+    a.u⁰ .= a.u; WaterLily.scale_u!(a,0)
+    # predictor u → u'
+    WaterLily.conv_diff!(a.f,a.u⁰,a.σ,ν=a.ν,perdir=a.perdir)
+    WaterLily.BDIM!(a); BC_!(a.u,a.U)
+    a.exitBC && WaterLily.exitBC!(a.u,a.u⁰,a.U,a.Δt[end]) # convective exit
+    WaterLily.project!(a,b); BC_!(a.u,a.U)
+    # corrector u → u¹
+    WaterLily.conv_diff!(a.f,a.u,a.σ,ν=a.ν,perdir=a.perdir)
+    WaterLily.BDIM!(a); WaterLily.scale_u!(a,0.5); BC_!(a.u,a.U)
+    WaterLily.project!(a,b,0.5); BC_!(a.u,a.U)
+    push!(a.Δt,WaterLily.CFL(a))
+end
+
+# BC function for no slip on noth and south face
+function BC_!(a,A;saveexit=true)
+    N,n = WaterLily.size_u(a)
+    for j ∈ 1:n, i ∈ 1:n # face then component
+        if j==2 && i==1 # Dirichlet cannot be imposed, must interpolate (u[i,j+1,1]+u[i,j,1])/2 = 0
+            @WaterLily.loop a[I,i] = -a[I-δ(j,I),i] over I ∈ WaterLily.slice(N,N[j],j)
+            @WaterLily.loop a[I,i] = -a[I+δ(j,I),i] over I ∈ WaterLily.slice(N,1,j)
+        elseif i==j # Normal direction, homoheneous Dirichlet
+            @WaterLily.loop a[I,i] = A[i] over I ∈ WaterLily.slice(N,1,j)
+            @WaterLily.loop a[I,i] = A[i] over I ∈ WaterLily.slice(N,2,j)
+            (!saveexit || i>1) && (@WaterLily.loop a[I,i] = A[i] over I ∈ WaterLily.slice(N,N[j],j))
+        else  # Tangential directions, interpolate ghost cell to homogeneous Dirichlet
+            @WaterLily.loop a[I,i] = a[I+δ(j,I),i] over I ∈ WaterLily.slice(N,1,j)
+            @WaterLily.loop a[I,i] = a[I-δ(j,I),i] over I ∈ WaterLily.slice(N,N[j],j)
+        end
+    end
+end
 
 # make a writer with some attributes
 velocity(a::Simulation) = a.flow.u |> Array;
@@ -16,30 +50,26 @@ vorticity(a::Simulation) = (@inside a.flow.σ[I] =
 _vbody(a::Simulation) = a.flow.V |> Array;
 mu0(a::Simulation) = a.flow.μ₀ |> Array;
 
-custom_attrib = Dict("u" => velocity,"p" => pressure,"d" => _body,
-                     "ω" => vorticity,"v" => _vbody, "μ₀" => mu0)
+custom_attrib = Dict(
+    "u" => velocity,
+    "p" => pressure,
+    "d" => _body,
+    "ω" => vorticity,
+    "v" => _vbody,
+    "μ₀" => mu0
+)# this maps what to write to the name in the file
 
 # writer for the sim
 wr = vtkWriter("WaterLily-Gismo"; attrib=custom_attrib)
 
 let # setting local scope for dt outside of the while loop
     
-    ControlPointsID, ControlPoints, quadPointID, quadPoint, forces, knots = initialize!()
-    
     # Simulation parameters
-    L,Re,U,ϵ = 2^6,250,1,0.5
-
-    # make the NURBS curve of the interface'
-    center = SA[2L,0] # move to the correct position in the domain
-    east = DynamicBody(NurbsCurve(MMatrix{size(ControlPoints[1])...}(ControlPoints[1])*L.+center,
-                          knots[1],ones(size(ControlPoints[1],2))),(0,1))
-    north= DynamicBody(NurbsCurve(MMatrix{size(ControlPoints[2])...}(reverse(ControlPoints[2],dims=2))*L.+center,
-                          knots[2],ones(size(ControlPoints[2],2))),(0,1))
-    west = DynamicBody(NurbsCurve(MMatrix{size(ControlPoints[3])...}(reverse(ControlPoints[3],dims=2))*L.+center,
-                          knots[3],ones(size(ControlPoints[3],2))),(0,1))
-
-    # make a combined body, carefull with winding direction of each curve
-    body = ParametricBody([east,north,west])
+    L,Re,U,Uref = 2^6,250,1,10.0
+    center = SA[2.95L,0]
+    
+    # coupling interface
+    interface, body = initialize!(Uref,L,center;dir=[1,-1,-1])
 
     # this makes sur the spline extend to infinity
     ParametricBodies.notC¹(l::ParametricBodies.NurbsLocator,uv) = false
@@ -49,51 +79,39 @@ let # setting local scope for dt outside of the while loop
     store = Store(sim) # allows checkpointing
 
     # simulations time
-    t₀ = 0.0; dt = dt_precice = PreCICE.getMaxTimeStepSize()
-    iter,every = 0,20 # for outputing VTK file
+    iter,every = 0,5 # for outputing VTK file
+
+    # result storage
+    results = []
 
     while PreCICE.isCouplingOngoing()
-        
-        # set time step
-        dt_precice = PreCICE.getMaxTimeStepSize()
-        dt = dt_precice # fix the time step to that of the precici-config file
-        sim.flow.Δt[end] = dt*sim.L
-           
-        if PreCICE.requiresWritingCheckpoint()
-            store!(store,sim)
-        end
 
-        # Read control point displacements
-        readData = transpose(PreCICE.readData("ControlPointMesh", "ControlPointData", ControlPointsID, dt))
-        deformation = getDeformation(readData,knots) # repack correctly
-        for i in 1:length(sim.body.bodies)
-            new = reverse(ControlPoints[i].+deformation[i],dims=2) # winding correctly
-            i==1 && (new = ControlPoints[i].+deformation[i])       # this one is not reversed
-            ParametricBodies.update!(sim.body.bodies[i],new.*sim.L.+center,dt*sim.L)
-        end
- 
-        # solver update
-        measure!(sim); mom_step!(sim.flow,sim.pois)
-        @inside sim.flow.p[I] = WaterLily.μ₀(sdf(sim.body,loc(0,I),0.0),sim.ϵ)*sim.flow.p[I] # fix pressure
-        getInterfaceForces!(forces,sim.flow,sim.body,quadPoint)
-        forces = clamp.(forces./sim.L,-sim.L,sim.L)
-        
-        # write the force at the integration points
-        PreCICE.writeData("ForceMesh", "ForceData", quadPointID, permutedims(forces))
+        # read the data from the other participant
+        readData!(interface, sim, store)
 
-        # do the coupling    
-        dt_precice = PreCICE.advance(dt)
+        # measure the participant
+        update!(interface, sim; center)
+
+        # update the this participant
+        step!(sim.flow, sim.pois, sim.body, interface)
+        # interface.forces .= 0.0 # scale
+        interface.forces .*= interface.U^2/interface.L # scale
+        println(interface.forces[1,1:10])
+        println(4sim.L)
+        interface.forces[1,:] .= 4sim.L
+
+        # write data to the other participant
+        writeData!(interface, sim, store)
         
-        # read checkpoint if required or move on
-        if PreCICE.requiresReadingCheckpoint()
-            revert!(store,sim)
-        else
-            t₀ += dt*sim.L # this is not really usefull
+        # if we have converged, save if required
+        if PreCICE.isTimeWindowComplete()
             mod(iter,every)==0 && write!(wr, sim)
             iter += 1
+            push!(results, sim.body.bodies[1].surf.pnts[:,end])
         end
     end
     close(wr)
+    @show results
 end
 PreCICE.finalize()
 println("WaterLily: Closing Julia solver...")
