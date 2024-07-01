@@ -22,6 +22,7 @@ function store!(s::Store,sim::AbstractSimulation)
 end
 function revert!(s::Store,sim::AbstractSimulation)
     sim.flow.u .= s.uˢ; sim.flow.p .= s.pˢ; pop!(sim.flow.Δt)
+    pop!(sim.pois.n); pop!(sim.pois.n) # pop predictor and corrector
     for i ∈ 1:length(sim.body.bodies)
         sim.body.bodies[i].surf.pnts     .= s.xˢ[i]
         sim.body.bodies[i].velocity.pnts .= s.ẋˢ[i]
@@ -45,18 +46,7 @@ function knotVectorUnpack(knots)
     knots = reshape(knots,reverse(size(knots)))[1,:]
     unpack(knots)
 end
-# function counterclockwise(a)
-#     s,n = 0,size(a,2)
-#     for i in 1:n
-#         j = (i+1)%n+1
-#         x1 = a[1,j]-a[2,i]
-#         y1 = a[2,j]-a[2,i]
-#         x2 = a[1,(j+1) % n+1] - a[1,j]
-#         y2 = a[2,(j+1) % n+1] - a[2,j]
-#         s += (x1 * y2 - x2 * y1)
-#     end
-#     return s > 0
-# end
+
 function getControlPoints(points, knots)
     points = reshape(points,reverse(size(points)))
     ncp = [length(knot)-count(i->i==0,knot) for knot in knots]
@@ -88,10 +78,9 @@ function getInterfaceForces!(forces,flow::Flow{T},body::ParaBodies,quadPoints,di
     end
 end
 
-
 struct CouplingInterface
     U::Float64
-    L::Float64
+    # L::Float64
     ControlPointsID::AbstractArray
     ControlPoints::AbstractArray
     quadPointID::AbstractArray
@@ -154,7 +143,7 @@ function initialize!(U,L,center;KnotMesh="KnotMesh",ControlPointMesh="ControlPoi
     end
 
     # return coupling interface
-    interface = CouplingInterface(U, L, ControlPointsID, ControlPoints, quadPointID, quadPoint, forces,
+    interface = CouplingInterface(U, ControlPointsID, ControlPoints, quadPointID, quadPoint, forces,
                                   deformation, knots, [dt], direction, length(bodies))
     
     # add some passive curves if we want
@@ -172,9 +161,16 @@ end
 function readData!(interface::CouplingInterface,sim::Simulation,store::Store)
     
     # set time step
-    interface.dt[end] = PreCICE.getMaxTimeStepSize() # fix the time step to that of the precici-config file
-    sim.flow.Δt[end] = interface.dt[end]*interface.L/interface.U
-        
+    # interface.dt[end] = PreCICE.getMaxTimeStepSize() # fix the time step to that of the precici-config file
+    # sim.flow.Δt[end] = interface.dt[end]*interface.L/interface.U
+    # sim.flow.Δt[end] = min(sim.flow.Δt[end],interface.dt[end]*interface.U/interface.L)
+
+    # set time step
+    dt_precice = PreCICE.getMaxTimeStepSize()
+    interface.dt[end] = min(sim.flow.Δt[end]*sim.U/sim.L, dt_precice) # min physical time step
+    sim.flow.Δt[end] = interface.dt[end]*sim.L/sim.U # numerical time step
+    # println(dt_precice," ",interface.dt[end]," ",sim.flow.Δt[end])
+
     if PreCICE.requiresWritingCheckpoint()
         store!(store,sim)
     end
@@ -190,7 +186,8 @@ function update!(interface::CouplingInterface,sim::Simulation;center=0)
     for i in 1:interface.N
         new = interface.ControlPoints[i].+interface.deformation[i]
         interface.dir[i] != 1 && (new = reverse(new;dims=2))
-        ParametricBodies.update!(sim.body.bodies[i],new.*interface.L.+center,interface.dt[end]*interface.L)
+        # time step is the (numerical) time between data exchange
+        ParametricBodies.update!(sim.body.bodies[i],new.*sim.L.+center,sim.flow.Δt[end])
     end
     # solver update
     WaterLily.measure!(sim)

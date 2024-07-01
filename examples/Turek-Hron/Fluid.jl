@@ -8,41 +8,43 @@ include("../../src/Interface.jl")
 
 
 # velocity profile of Turek Hron
-# function uλ(i,xy)
-#     x,y = @. xy .- 2
-#     i!=1 && return 0.0
-#     ((y < 0) && (y > 4D-1)) && return 0.0 # correct behaviour on ghost cells
-#     return 1.5*U*y/(4D-1)*(1.0-y/(4D-1))/(0.5)^2
-# end
+function uλ(i,xy,N)
+    x,y = @. xy .- 2
+    i!=1 && return 0.0
+    ((y < 0) && (y > N-1)) && return 0.0 # correct behaviour on ghost cells
+    return 1.5*U*y/(N-1)*(1.0-y/(N-1))/(0.5)^2
+end
 
-# # overwrite the momentum function so that we get the correct BC
-# @fastmath function WaterLily.mom_step!(a::Flow,b::AbstractPoisson)
-#     a.u⁰ .= a.u; WaterLily.scale(a,0)
-#     # predictor u → u'
-#     WaterLily.conv_diff!(a.f,a.u⁰,a.σ,ν=a.ν)
-#     WaterLily.BDIM!(a); BC_TH!(a.u,a.U)
-#     WaterLily.project!(a,b); BC_TH!(a.u,a.U)
-#     # corrector u → u¹
-#     WaterLily.conv_diff!(a.f,a.u,a.σ,ν=a.ν)
-#     WaterLily.BDIM!(a); BC_TH!(a.u,a.U)
-#     WaterLily.project!(a,b); WaterLily.scale(a,0.5); BC_TH!(a.u,a.U)
-#     push!(a.Δt,WaterLily.CFL(a))
-# end
+# overwrite the momentum function so that we get the correct BC
+@fastmath function WaterLily.mom_step!(a::Flow,b::AbstractPoisson)
+    a.u⁰ .= a.u; WaterLily.scale_u!(a,0)
+    # predictor u → u'
+    WaterLily.conv_diff!(a.f,a.u⁰,a.σ,ν=a.ν,perdir=a.perdir)
+    WaterLily.BDIM!(a); BC_!(a.u,a.U)
+    a.exitBC && WaterLily.exitBC!(a.u,a.u⁰,a.U,a.Δt[end]) # convective exit
+    WaterLily.project!(a,b); BC_!(a.u,a.U)
+    # corrector u → u¹
+    WaterLily.conv_diff!(a.f,a.u,a.σ,ν=a.ν,perdir=a.perdir)
+    WaterLily.BDIM!(a); WaterLily.scale_u!(a,0.5); BC_!(a.u,a.U)
+    WaterLily.project!(a,b,0.5); BC_!(a.u,a.U)
+    push!(a.Δt,WaterLily.CFL(a))
+end
 
-# # BC function using the profile
-# function BC_TH!(a,A,f=1)
-#     N,n = WaterLily.size_u(a)
-#     for j ∈ 1:n, i ∈ 1:n
-#         if i==j # Normal direction, impose profile on inlet and outlet
-#             for s ∈ (1,2,N[j])
-#                 @WaterLily.loop a[I,i] = f*uλ(i,loc(i,I)) over I ∈ WaterLily.slice(N,s,j)
-#             end
-#         else  # Tangential directions, interpolate ghost cell to homogeneous Dirichlet
-#             @WaterLily.loop a[I,i] = -a[I+δ(j,I),i] over I ∈ WaterLily.slice(N,1,j)
-#             @WaterLily.loop a[I,i] = -a[I-δ(j,I),i] over I ∈ WaterLily.slice(N,N[j],j)
-#         end
-#     end
-# end
+# BC function using the profile
+function BC_!(a,A;saveexit=true)
+    N,n = WaterLily.size_u(a)
+    for j ∈ 1:n, i ∈ 1:n
+        if i==j # Normal direction, impose profile on inlet and outlet
+            for s ∈ (1,2)
+                @WaterLily.loop a[I,i] = uλ(i,loc(i,I),N[2]) over I ∈ WaterLily.slice(N,s,j)
+            end
+            (!saveexit || i>1) && (@WaterLily.loop a[I,i] = uλ(i,loc(i,I),N[2]) over I ∈ WaterLily.slice(N,N[j],j))
+        else  # Tangential directions, interpolate ghost cell to homogeneous Dirichlet
+            @WaterLily.loop a[I,i] = -a[I+δ(j,I),i] over I ∈ WaterLily.slice(N,1,j)
+            @WaterLily.loop a[I,i] = -a[I-δ(j,I),i] over I ∈ WaterLily.slice(N,N[j],j)
+        end
+    end
+end
 
 # make a writer with some attributes
 velocity(a::Simulation) = a.flow.u |> Array;
@@ -90,7 +92,7 @@ let # setting local scope for dt outside of the while loop
     ParametricBodies.notC¹(l::ParametricBodies.NurbsLocator,uv) = false
 
     # construct the simulation
-    sim = Simulation((11D,4D),(U,0),L;U,ν=U*L/Re,body,T=Float64)
+    sim = Simulation((11D,4D),(U,0),L;U,ν=U*L/Re,body,T=Float64,uλ=(i,x)->uλ(i,x,4D))
     store = Store(sim) # allows checkpointing
 
     # simulations time

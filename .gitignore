@@ -1,1 +1,13 @@
 examples/Manifest.toml
+examples/*/*.log
+examples/*/*.json
+examples/*/*.png
+examples/*/*.pvd
+examples/*/*.vtu
+examples/*/vtk_data
+examples/*/*.jld2
+examples/*/*.csv
+examples/*/precice-profiling/
+*.png
+*.gif
+.vscode

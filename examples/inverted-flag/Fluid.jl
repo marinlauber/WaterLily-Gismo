@@ -32,7 +32,7 @@ wr = vtkWriter("WaterLily-Gismo"; attrib=custom_attrib)
 let # setting local scope for dt outside of the while loop
     
     # Simulation parameters
-    L,Re,U,Uref = 2^6,250,1,10.0
+    L,Re,U,Uref = 2^6,250,1,1.0
     center = SA[2L,2L]
     
     # coupling interface
@@ -46,7 +46,7 @@ let # setting local scope for dt outside of the while loop
     store = Store(sim) # allows checkpointing
 
     # simulations time
-    iter,every = 0,5 # for outputing VTK file
+    iter,every = 0,25 # for outputing VTK file
 
     # result storage
     results = []
@@ -55,7 +55,6 @@ let # setting local scope for dt outside of the while loop
 
         # read the data from the other participant
         readData!(interface, sim, store)
-        @show interface.deformation
 
         # measure the participant
         update!(interface, sim; center)
@@ -64,7 +63,7 @@ let # setting local scope for dt outside of the while loop
         step!(sim.flow, sim.pois, sim.body, interface)
         interface.forces .= 0.0 # scale
         # interface.forces .*= interface.U^2/interface.L # scale
-        WaterLily.time(sim)<0.1sim.L && (interface.forces[2,Index(interface.quadPoint,3)] .= -4sim.L)
+        interface.forces[2,Index(interface.quadPoint,3)] .= -1
         
         # write data to the other participant
         writeData!(interface, sim, store)
@@ -77,7 +76,7 @@ let # setting local scope for dt outside of the while loop
         end
     end
     close(wr)
-    @show results
+    # @show results
 end
 PreCICE.finalize()
 println("WaterLily: Closing Julia solver...")

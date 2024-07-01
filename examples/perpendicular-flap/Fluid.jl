@@ -4,6 +4,7 @@ using ParametricBodies
 using StaticArrays
 using Plots
 using WriteVTK
+using FileIO,JLD2
 include("../../src/Interface.jl")
 
 # overwrite the momentum function so that we get the correct BC
@@ -65,7 +66,7 @@ wr = vtkWriter("WaterLily-Gismo"; attrib=custom_attrib)
 let # setting local scope for dt outside of the while loop
     
     # Simulation parameters
-    L,Re,U,Uref = 2^6,250,1,10.0
+    L,Re,U,Lref,Uref = 2^6,250,1,1.0,10.0
     center = SA[2.95L,0]
     
     # coupling interface
@@ -76,6 +77,7 @@ let # setting local scope for dt outside of the while loop
 
     # construct the simulation
     sim = Simulation((6L,4L),(U,0),L;U,ν=U*L/Re,body,T=Float64)
+    sim.flow.Δt[end] = 0.4
     store = Store(sim) # allows checkpointing
 
     # simulations time
@@ -94,11 +96,10 @@ let # setting local scope for dt outside of the while loop
 
         # update the this participant
         step!(sim.flow, sim.pois, sim.body, interface)
+        interface.forces .*= interface.U^2 # scale
+
         # interface.forces .= 0.0 # scale
-        interface.forces .*= interface.U^2/interface.L # scale
-        println(interface.forces[1,1:10])
-        println(4sim.L)
-        interface.forces[1,:] .= 4sim.L
+        # interface.forces[1,:] .= interface.U^2 
 
         # write data to the other participant
         writeData!(interface, sim, store)
@@ -107,11 +108,19 @@ let # setting local scope for dt outside of the while loop
         if PreCICE.isTimeWindowComplete()
             mod(iter,every)==0 && write!(wr, sim)
             iter += 1
-            push!(results, sim.body.bodies[1].surf.pnts[:,end])
+            push!(results,[interface.dt[end]*sim.L/sim.U,sim.body.bodies[2].surf.pnts[1,1]])
+            println("tU/L=",round(sim_time(sim),digits=4),", Δt=",round(sim.flow.Δt[end],digits=3))
         end
     end
     close(wr)
-    @show results
+    save("results.jld2","results",results)
+    @show sim.flow.Δt
+    @show sim.pois.n
 end
 PreCICE.finalize()
 println("WaterLily: Closing Julia solver...")
+
+# using FileIO, JLD2,Plots
+a = load("/home/marin/Workspace/WaterLily-Gismo/examples/perpendicular-flap/results.jld2")["results"]
+pos = getindex.(a,2); time = cumsum(getindex.(a,1))
+plot(time./2^6,pos./2^6.0.-3.0, xlabel="Time", ylabel="Y position", legend=:none)
