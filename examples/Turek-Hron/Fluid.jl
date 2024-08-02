@@ -2,46 +2,44 @@ using PreCICE
 using WaterLily
 using ParametricBodies
 using StaticArrays
-using Plots
 using WriteVTK
+using FileIO,JLD2
 include("../../src/Interface.jl")
 
-
 # velocity profile of Turek Hron
-function uλ(i,xy,N)
+function uBC(i,xy,N,U1=1)
     x,y = @. xy .- 2
     i!=1 && return 0.0
     ((y < 0) && (y > N-1)) && return 0.0 # correct behaviour on ghost cells
-    return 1.5*U*y/(N-1)*(1.0-y/(N-1))/(0.5)^2
+    return 1.5*U1*y/(N-1)*(1.0-y/(N-1))/(0.5)^2
 end
 
-# overwrite the momentum function so that we get the correct BC
-@fastmath function WaterLily.mom_step!(a::Flow,b::AbstractPoisson)
-    a.u⁰ .= a.u; WaterLily.scale_u!(a,0)
-    # predictor u → u'
-    WaterLily.conv_diff!(a.f,a.u⁰,a.σ,ν=a.ν,perdir=a.perdir)
-    WaterLily.BDIM!(a); BC_!(a.u,a.U)
-    a.exitBC && WaterLily.exitBC!(a.u,a.u⁰,a.U,a.Δt[end]) # convective exit
-    WaterLily.project!(a,b); BC_!(a.u,a.U)
-    # corrector u → u¹
-    WaterLily.conv_diff!(a.f,a.u,a.σ,ν=a.ν,perdir=a.perdir)
-    WaterLily.BDIM!(a); WaterLily.scale_u!(a,0.5); BC_!(a.u,a.U)
-    WaterLily.project!(a,b,0.5); BC_!(a.u,a.U)
-    push!(a.Δt,WaterLily.CFL(a))
-end
-
-# BC function using the profile
-function BC_!(a,A;saveexit=true)
+# BC function for no slip on north and south face
+function WaterLily.BC!(a,A,saveexit=false,perdir=())
     N,n = WaterLily.size_u(a)
-    for j ∈ 1:n, i ∈ 1:n
-        if i==j # Normal direction, impose profile on inlet and outlet
-            for s ∈ (1,2)
-                @WaterLily.loop a[I,i] = uλ(i,loc(i,I),N[2]) over I ∈ WaterLily.slice(N,s,j)
-            end
-            (!saveexit || i>1) && (@WaterLily.loop a[I,i] = uλ(i,loc(i,I),N[2]) over I ∈ WaterLily.slice(N,N[j],j))
-        else  # Tangential directions, interpolate ghost cell to homogeneous Dirichlet
-            @WaterLily.loop a[I,i] = -a[I+δ(j,I),i] over I ∈ WaterLily.slice(N,1,j)
+    for j ∈ 1:n, i ∈ 1:n # face then component
+        if j==2 && i==1 # Dirichlet cannot be imposed, must interpolate (u[i,j+1,1]+u[i,j,1])/2 = 0
             @WaterLily.loop a[I,i] = -a[I-δ(j,I),i] over I ∈ WaterLily.slice(N,N[j],j)
+            @WaterLily.loop a[I,i] = -a[I+δ(j,I),i] over I ∈ WaterLily.slice(N,1,j)
+            if all(A.≈0) # μ₀ case on the boundary
+                @WaterLily.loop a[I,i] = A[i] over I ∈ WaterLily.slice(N,N[j],j)
+                @WaterLily.loop a[I,i] = A[i] over I ∈ WaterLily.slice(N,1,j)
+            end
+        elseif i==j # Normal direction, homoheneous Dirichlet
+            if all(A.≈0)
+                for s ∈ (1,2)
+                    @WaterLily.loop a[I,i] = A[i] over I ∈ WaterLily.slice(N,s,j)
+                end
+                (!saveexit || i>1) && (@WaterLily.loop a[I,i] = A[i] over I ∈ WaterLily.slice(N,N[j],j)) # overwrite exit
+            else
+                for s ∈ (1,2)
+                    @WaterLily.loop a[I,i] = uBC(i,loc(i,I),N[2],A[1]) over I ∈ WaterLily.slice(N,s,j)
+                end
+                (!saveexit || i>1) && (@WaterLily.loop a[I,i] = uBC(i,loc(i,I),N[2],A[1]) over I ∈ WaterLily.slice(N,N[j],j))
+            end
+        else  # Tangential directions, interpolate ghost cell to homogeneous Dirichlet
+            @WaterLily.loop a[I,i] = a[I+δ(j,I),i] over I ∈ WaterLily.slice(N,1,j)
+            @WaterLily.loop a[I,i] = a[I-δ(j,I),i] over I ∈ WaterLily.slice(N,N[j],j)
         end
     end
 end
@@ -67,53 +65,48 @@ custom_attrib = Dict(
 )# this maps what to write to the name in the file
 
 # writer for the sim
-wr = vtkWriter("WaterLily-Gismo"; attrib=custom_attrib)
+wr = vtkWriter("Turek-Hron"; attrib=custom_attrib)
 
 let # setting local scope for dt outside of the while loop
     
     # Simulation parameters
-    L,Re,U,Uref = 2^6,250,1,10.0
-    D = L÷2
-    center = SA[4D,2D]
+    D,Re,U,Uref = 2^4,250,1,2.0
+    L = D*3.5 # diameter of the cylinder compared to the flap
+    center = SA[2.4D,1.85D]
+    # center = SA[3.4D,3.85D]
     
     # circle for Turek Hron
-    cps = SA[1 1 0 -1 -1 -1  0  1 1.
-             0 1 1  1  0 -1 -1 -1 0]*D/2 .+ center .-SA[D/2,0]
-    weights = [1.,√2/2,1.,√2/2,1.,√2/2,1.,√2/2,1.]
-    knots =   [0,0,0,1/4,1/4,1/2,1/2,3/4,3/4,1,1,1]
-
-    # make a nurbs circle
-    circle = DynamicBody(NurbsCurve(MMatrix(cps),knots,weights),(0,1))
-
+    circle = AutoBody((x,t)->√sum(abs2,x.-SA[2D,1.95D])-D/2)
+    # circle = AutoBody((x,t)->√sum(abs2,x.-SA[3D,3.95D])-D/2)
+    
     # coupling interface
     interface, body = initialize!(Uref,L,center;dir=[1,-1,-1,1],curves=[circle])
 
-    # this makes sur the spline extend to infinity
-    ParametricBodies.notC¹(l::ParametricBodies.NurbsLocator,uv) = false
-
     # construct the simulation
-    sim = Simulation((11D,4D),(U,0),L;U,ν=U*L/Re,body,T=Float64,uλ=(i,x)->uλ(i,x,4D))
+    # slow ramp up of the velocity
+    a = 4.0
+    Ut(i,t::T) where T = i==1 ? convert(T,a*t/L+(1.0+tanh(31.4*(t/L-1.0/a)))/2.0*(1-a*t/L)) : zero(T) # velocity BC
+    sim = Simulation((25D,4D),Ut,L;U,ν=U*D/Re,body,T=Float64,uλ=(i,x)->uBC(i,x,4D,1.0))
+    # sim = Simulation((16D,8D),Ut,L;U,ν=U*D/Re,body,T=Float64)
     store = Store(sim) # allows checkpointing
 
     # simulations time
-    iter,every = 0,5 # for outputing VTK file
-
-    # result storage
+    iter,every = 0,20 # for outputing VTK file
     results = []
 
     while PreCICE.isCouplingOngoing()
 
         # read the data from the other participant
         readData!(interface, sim, store)
-        @show interface.deformation
 
         # measure the participant
         update!(interface, sim; center)
 
         # update the this participant
         step!(sim.flow, sim.pois, sim.body, interface)
-        interface.forces .= 0.0 # scale
-        # interface.forces .*= interface.U^2/interface.L # scale
+        interface.forces .*= interface.U^2 # scale
+        sim_time(sim)<2 && (interface.forces .= 0.0;
+                            interface.forces[2,:] .-= 0.01sin(π*sim_time(sim))) # initial condition
 
         # write data to the other participant
         writeData!(interface, sim, store)
@@ -121,12 +114,26 @@ let # setting local scope for dt outside of the while loop
         # if we have converged, save if required
         if PreCICE.isTimeWindowComplete()
             mod(iter,every)==0 && write!(wr, sim)
+            push!(results,[sum(@view(sim.flow.Δt[1:end-1]))*interface.U/sim.L,sim.body.bodies[1].surf.pnts[2,end]])
             iter += 1
-            push!(results, sim.body.bodies[1].surf.pnts[:,end])
         end
     end
     close(wr)
-    @show results
+    @show sim.pois.n
+    @show sim.flow.Δt
+    save("results.jld2","results",results)
 end
 PreCICE.finalize()
 println("WaterLily: Closing Julia solver...")
+let
+    using FileIO,DataFrames,Plots
+    data = DataFrame(load("Workspace/WaterLily-Gismo/examples/Turek-Hron/data/turek_hron_data.csv"),
+                    ["time","disp"])
+    plot(data.time,data.disp,xlims=(4,6.5),ylims=(-0.05,0.05),ls=:dash,
+        ylabel="y-displacement [m]",xlabel="time [s]",lw=1,
+        title="y-displacement of the flap tip",label="reference")
+    a = load("Workspace/WaterLily-Gismo/examples/Turek-Hron/results.jld2")["results"]
+    pos = getindex.(a,2); time = getindex.(a,1)
+    plot!(time/16.0.+1.5, (pos.-sum(pos[end-20000:end])/20000)./16/3.5/2, label="WaterLily-Gismo")
+    savefig("turek_hron.png")
+end

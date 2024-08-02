@@ -1,0 +1,10 @@
+rm -rf *.log
+rm -rf *.out
+rm -rf vtk_data
+rm -rf *.pvd
+rm -rf precice-profiling/
+rm -rf precice-run/
+rm -rf ../precice-run/
+rm -rf output/
+rm -rf *.vtp
+rm -rf *.csv

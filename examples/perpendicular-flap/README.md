@@ -11,6 +11,7 @@ To start the Solid (`G+Smo`) participant
 
 ```bash
 module load precice/3.1.1
-sudo make -C ~/Workspace/gismo/build/ test-2d-vertical-beam-implicit-solid
-sudo ./test-2d-vertical-beam-implicit-solid -c precice-config.xml
+sudo make -C ~/Workspace/gismo/build/bin/test-2d-vertical-beam-implicit-solid
+cp ~/Workspace/gismo/build/bin/test-2d-vertical-beam-implicit-solid Solid
+sudo ./Solid -c precice-config.xml
 ```

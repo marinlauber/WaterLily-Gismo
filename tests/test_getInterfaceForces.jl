@@ -44,7 +44,7 @@ function param_force(f::Function,curve::Function,t,lims::NTuple{2,T};N=64) where
 end
 
 # parameters
-L=2^8
+L=2^6
 Re=80
 U=1
 center = SA[3L,3.01L]
@@ -118,7 +118,7 @@ end
 function pflow_circle(x,center,R)
     x = x .- center .+ 1.5 # whis is that here?
     r,θ = √sum(abs2,x),atan(x[2],x[1])
-    r>R-4 ? 2*R^2/r^2*cos(2θ) - R^4/r^4 : 0.0
+    r>R-10 ? 2*R^2/r^2*cos(2θ) - R^4/r^4 : 0.0
 end
 apply!(x->pflow_circle(x,center,radius),sim.flow.p)
 flood(sim.flow.p,clims=(-3,1))
@@ -147,58 +147,59 @@ end
 plot!()
 savefig("test_forces_256.png")
 
-# # intialize
-# t₀ = sim_time(sim)
-# duration = 10.
-# tstep = 0.2
-# vforces = []; pforces = []; preCICE = []
+# intialize
+t₀ = sim_time(sim)
+duration = 10.
+tstep = 0.2
+vforces = []; pforces = []; preCICE = []
 
-# # reset pressure
-# sim.flow.p.=0.0;
+# reset pressure
+sim.flow.p.=0.0;
 
-# # for thesting the integration
-# quadPoints,weights = ParametricBodies._gausslegendre(16,Float64)
-# quadPoints =  (quadPoints.+1)/2; weights ./= 2
-# quadPoints = [quadPoints for _ in 1:length(sim.body.bodies)]
-# ndx = getInterfacedx(sim.flow,sim.body,quadPoints,weights)
-# forces = zeros(2,length(ndx))
-# # run
-# anim = @animate for tᵢ in range(t₀,t₀+duration;step=tstep)
+# for thesting the integration
+quadPoints,weights = ParametricBodies._gausslegendre(16,Float64)
+quadPoints =  (quadPoints.+1)/2; weights ./= 2
+quadPoints = [quadPoints for _ in 1:length(sim.body.bodies)]
+ndx = getInterfacedx(sim.flow,sim.body,quadPoints,weights)
+forces = zeros(2,length(ndx))
+# run
+anim = @animate for tᵢ in range(t₀,t₀+duration;step=tstep)
 
-#     # update until time tᵢ in the background
-#     t = sum(sim.flow.Δt[1:end-1])
-#     while t < tᵢ*sim.L/sim.U
-#         mom_step!(sim.flow,sim.pois) # evolve Flow
-#         t += sim.flow.Δt[end]
+    # update until time tᵢ in the background
+    t = sum(sim.flow.Δt[1:end-1])
+    while t < tᵢ*sim.L/sim.U
+        mom_step!(sim.flow,sim.pois) # evolve Flow
+        t += sim.flow.Δt[end]
 
-#         @inside sim.flow.p[I] = WaterLily.μ₀(sdf(sim.body,loc(0,I),0.0),1)*sim.flow.p[I] # needed because ∮nds gets inside points
-#         f = zeros(2); s = zeros(2);
-#         for b ∈ sim.body.bodies
-#             f .+= ParametricBodies.∮nds(sim.flow.p,b;N=16)
-#             s .+= ParametricBodies.∮τnds(sim.flow.u,b;N=16)
-#         end
-#         getInterfaceForces!(forces,sim.flow,sim.body,quadPoints,[1,1,1,1])
-#         push!(pforces,f[1]); push!(vforces,s[1]); push!(preCICE,sum(forces.*ndx',dims=2)[1])
-#     end
+        @inside sim.flow.p[I] = WaterLily.μ₀(sdf(sim.body,loc(0,I),0.0),1)*sim.flow.p[I] # needed because ∮nds gets inside points
+        f = zeros(2); s = zeros(2);
+        for b ∈ sim.body.bodies
+            f .+= ParametricBodies.∮nds(sim.flow.p,b;N=16)
+            s .+= ParametricBodies.∮τnds(sim.flow.u,b;N=16)
+        end
+        getInterfaceForces!(forces,sim.flow,sim.body,quadPoints,[1,1,1,1])
+        push!(pforces,f[1]); push!(vforces,s[1]); push!(preCICE,sum(forces.*ndx',dims=2)[1])
+    end
 
-#     # flood plot
-#     @inside sim.flow.σ[I] = WaterLily.curl(3,I,sim.flow.u) * sim.L / sim.U
-#     contourf(clamp.(sim.flow.σ,-10,10)'|>Array,dpi=300,
-#              color=palette(:RdBu_11), clims=(-10,10), linewidth=0,
-#              aspect_ratio=:equal, legend=false, border=:none)
-#     for b ∈ sim.body.bodies
-#         plot!(b.surf; add_cp=true)
-#     end
-#     # print time step
-#     println("tU/L=",round(tᵢ,digits=4),", Δt=",round(sim.flow.Δt[end],digits=3))
-# end
-# # save gif
-# gif(anim, "test_forces.gif", fps=24)
+    # flood plot
+    @inside sim.flow.σ[I] = WaterLily.curl(3,I,sim.flow.u) * sim.L / sim.U
+    contourf(clamp.(sim.flow.σ,-10,10)'|>Array,dpi=300,
+             color=palette(:RdBu_11), clims=(-10,10), linewidth=0,
+             aspect_ratio=:equal, legend=false, border=:none)
+    for b ∈ sim.body.bodies
+        plot!(b.surf; add_cp=true)
+    end
+    # print time step
+    println("tU/L=",round(tᵢ,digits=4),", Δt=",round(sim.flow.Δt[end],digits=3))
+end
+# save gif
+gif(anim, "test_forces.gif", fps=24)
 
-# # make fig
-# times = cumsum(sim.flow.Δt)[4:end-1]./sim.L
-# plt = plot(label="Pressure force",xlabel="Convective Time",ylabel="Force")
-# plot!(plt,times,-2pforces[4:end]./sim.L,label="Pressure")
-# plot!(plt,times, 2preCICE[4:end]./sim.L,label="Pressure PreCICE")
-# plot!(plt,times,sim.flow.ν.*2vforces[4:end]/sim.L,label="Viscous")
-# ylims!(0,2) # xlims!(0,100); 
+# make fig
+times = cumsum(sim.flow.Δt)[4:end-1]./sim.L
+plt = plot(label="Pressure force",xlabel="Convective Time",ylabel="Force")
+plot!(plt,times,-2pforces[4:end]./sim.L,label="Pressure")
+plot!(plt,times, 2preCICE[4:end]./sim.L,label="Pressure PreCICE")
+plot!(plt,times,sim.flow.ν.*2vforces[4:end]/sim.L,label="Viscous")
+ylims!(0,2) # xlims!(0,100);
+savefig(plt,"test_forces_circle.png")

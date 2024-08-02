@@ -5,9 +5,14 @@ examples/*/*.png
 examples/*/*.pvd
 examples/*/*.vtu
 examples/*/vtk_data
+examples/*/data
+examples/*/output
+examples/*/result-*
 examples/*/*.jld2
 examples/*/*.csv
+examples/*/*pvsm
 examples/*/precice-profiling/
+examples/precice-run/
 *.png
 *.gif
 .vscode

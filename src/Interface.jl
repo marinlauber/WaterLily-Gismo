@@ -1,32 +1,24 @@
 using ParametricBodies
 using WaterLily
+using StaticArrays
 
 # structure to store fluid state
 struct Store
     uˢ::AbstractArray
     pˢ::AbstractArray
-    xˢ::AbstractArray
-    ẋˢ::AbstractArray
+    b::Vector{Bodies}
     function Store(sim::AbstractSimulation)
-        xs = [copy(b.surf.pnts) for b in sim.body.bodies]
-        vs = [copy(b.velocity.pnts) for b in sim.body.bodies]
-        new(copy(sim.flow.u),copy(sim.flow.p),xs,vs)
+        new(copy(sim.flow.u),copy(sim.flow.p),[copy(sim.body)])
     end
 end
 function store!(s::Store,sim::AbstractSimulation)
-    s.uˢ .= sim.flow.u; s.pˢ .= sim.flow.p;
-    for i ∈ 1:length(sim.body.bodies)
-        s.xˢ[i] .= sim.body.bodies[i].surf.pnts
-        s.ẋˢ[i] .= sim.body.bodies[i].velocity.pnts
-    end
+    s.uˢ .= sim.flow.u; s.pˢ .= sim.flow.p
+    s.b[1] = copy(sim.body)
 end
 function revert!(s::Store,sim::AbstractSimulation)
     sim.flow.u .= s.uˢ; sim.flow.p .= s.pˢ; pop!(sim.flow.Δt)
     pop!(sim.pois.n); pop!(sim.pois.n) # pop predictor and corrector
-    for i ∈ 1:length(sim.body.bodies)
-        sim.body.bodies[i].surf.pnts     .= s.xˢ[i]
-        sim.body.bodies[i].velocity.pnts .= s.ẋˢ[i]
-    end
+    sim.body = s.b[1] # nice and simple
 end
 
 # unpack subarray of inceasing values of an hcat
@@ -64,15 +56,15 @@ function getDeformation(points,knots)
 end
 using ParametricBodies: _pforce, _vforce
 """
-    getInterfaceForces!(forces,flow::Flow,body::ParaBodies,quadPoints)
+    getInterfaceForces!(forces,flow::Flow,body::Bodies,quadPoints)
 
 Compute the interface forces at the quadrature points `quadPoints` for each body in `body.bodies`.
 """
 Index(Qs,i) = sum(length.(Qs[1:i-1]))+1:sum(length.(Qs[1:i]))
-function getInterfaceForces!(forces,flow::Flow{T},body::ParaBodies,quadPoints,dir) where T
+function getInterfaceForces!(forces,flow::Flow{T},body::Bodies,quadPoints,dir) where T
     for (i,b) in enumerate(body.bodies[1:length(quadPoints)]) # only select the active curves
         I = Index(quadPoints,i)
-        fi = reduce(hcat,[-1.0*_pforce(b.surf,flow.p,s,zero(T),Val{false}()) for s ∈ quadPoints[i]])
+        fi = reduce(hcat,[-1.0*_pforce(b.curve,flow.p,s,zero(T),Val{false}()) for s ∈ quadPoints[i]])
         dir[i] != 1 && (fi = reverse(fi;dims=2))
         forces[:,I] .= fi
     end
@@ -120,8 +112,6 @@ function initialize!(U,L,center;KnotMesh="KnotMesh",ControlPointMesh="ControlPoi
     ControlPointsID = Array{Int32}(ControlPointsID)
     ControlPoints = getControlPoints(ControlPoints, knots)
     deformation = copy(ControlPoints)
-    @show ControlPointsID
-    @show ControlPoints
     isnothing(dir) ? (direction = ones(length(ControlPoints))) : direction = dir
     
     # get the quad points in parameter space
@@ -129,17 +119,18 @@ function initialize!(U,L,center;KnotMesh="KnotMesh",ControlPointMesh="ControlPoi
     forces = zeros(reverse(size(quadPoint))...)
     quadPointID = Array{Int32}(quadPointID)
     quadPoint = quadPointUnpack(quadPoint)
-    @show quadPointID
-    @show quadPoint
 
     dt = PreCICE.getMaxTimeStepSize()
     
     # construct the interface curves
-    bodies = DynamicBody[]
+    bodies = AbstractBody[]; ops = Function[]
     for (i,(cps,knot)) in enumerate(zip(ControlPoints,knots))
         direction[i] != 1 && (cps = reverse(cps;dims=2))
-        push!(bodies,DynamicBody(NurbsCurve(MMatrix{size(cps)...}(cps)*L.+center,
-                                 knot,ones(size(cps,2))),(0,1)))
+        cps = SMatrix{2,size(cps,2)}(cps)
+        knot = SVector{length(knot)}(knot)
+        weights = SA[ones(size(cps,2))...]
+        push!(bodies,DynamicNurbsBody(NurbsCurve(cps*L.+center,knot,weights)))
+        push!(ops, ∩) # always interset with the next curve
     end
 
     # return coupling interface
@@ -147,29 +138,21 @@ function initialize!(U,L,center;KnotMesh="KnotMesh",ControlPointMesh="ControlPoi
                                   deformation, knots, [dt], direction, length(bodies))
     
     # add some passive curves if we want
-    if !isnothing(curves)
-        for crv in curves
-            push!(bodies,crv)
-            println("Adding a curve to the stack...")
-        end
+    !isnothing(curves) && for crv in curves
+        push!(bodies,crv); push!(ops, ∪) # always union with the next curve
+        println("Adding a curve to the stack...")
     end
 
     # return the interface and the body
-    return interface, ParametricBody(bodies)
+    return interface, Bodies(bodies, ops)
 end
 
 function readData!(interface::CouplingInterface,sim::Simulation,store::Store)
-    
-    # set time step
-    # interface.dt[end] = PreCICE.getMaxTimeStepSize() # fix the time step to that of the precici-config file
-    # sim.flow.Δt[end] = interface.dt[end]*interface.L/interface.U
-    # sim.flow.Δt[end] = min(sim.flow.Δt[end],interface.dt[end]*interface.U/interface.L)
 
     # set time step
     dt_precice = PreCICE.getMaxTimeStepSize()
-    interface.dt[end] = min(sim.flow.Δt[end]*sim.U/sim.L, dt_precice) # min physical time step
+    interface.dt[end] = dt_precice# min(sim.flow.Δt[end]*sim.U/sim.L, dt_precice) # min physical time step
     sim.flow.Δt[end] = interface.dt[end]*sim.L/sim.U # numerical time step
-    # println(dt_precice," ",interface.dt[end]," ",sim.flow.Δt[end])
 
     if PreCICE.requiresWritingCheckpoint()
         store!(store,sim)
@@ -187,7 +170,8 @@ function update!(interface::CouplingInterface,sim::Simulation;center=0)
         new = interface.ControlPoints[i].+interface.deformation[i]
         interface.dir[i] != 1 && (new = reverse(new;dims=2))
         # time step is the (numerical) time between data exchange
-        ParametricBodies.update!(sim.body.bodies[i],new.*sim.L.+center,sim.flow.Δt[end])
+        new = SMatrix{size(new)...}(new.*sim.L.+center)
+        sim.body.bodies[i] = ParametricBodies.update!(sim.body.bodies[i],new,sim.flow.Δt[end])
     end
     # solver update
     WaterLily.measure!(sim)
