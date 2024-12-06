@@ -7,15 +7,15 @@ struct Store
     uˢ::AbstractArray
     pˢ::AbstractArray
     b::Vector{Bodies}
-    function Store(sim::AbstractSimulation)
+    function Store(sim::Simulation)
         new(copy(sim.flow.u),copy(sim.flow.p),[copy(sim.body)])
     end
 end
-function store!(s::Store,sim::AbstractSimulation)
+function store!(s::Store,sim::Simulation)
     s.uˢ .= sim.flow.u; s.pˢ .= sim.flow.p
     s.b[1] = copy(sim.body)
 end
-function revert!(s::Store,sim::AbstractSimulation)
+function revert!(s::Store,sim::Simulation)
     sim.flow.u .= s.uˢ; sim.flow.p .= s.pˢ; pop!(sim.flow.Δt)
     pop!(sim.pois.n); pop!(sim.pois.n) # pop predictor and corrector
     sim.body = s.b[1] # nice and simple
@@ -139,7 +139,7 @@ function initialize!(U,L,center;KnotMesh="KnotMesh",ControlPointMesh="ControlPoi
     
     # add some passive curves if we want
     !isnothing(curves) && for crv in curves
-        push!(bodies,crv); push!(ops, ∪) # always union with the next curve
+        push!(bodies,crv); push!(ops, +) # always union with the next curve
         println("Adding a curve to the stack...")
     end
 
@@ -169,8 +169,8 @@ function update!(interface::CouplingInterface,sim::Simulation;center=0)
     for i in 1:interface.N
         new = interface.ControlPoints[i].+interface.deformation[i]
         interface.dir[i] != 1 && (new = reverse(new;dims=2))
-        # time step is the (numerical) time between data exchange
         new = SMatrix{size(new)...}(new.*sim.L.+center)
+        # time step is the (numerical) time between data exchange
         sim.body.bodies[i] = ParametricBodies.update!(sim.body.bodies[i],new,sim.flow.Δt[end])
     end
     # solver update

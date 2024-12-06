@@ -72,24 +72,28 @@ let # setting local scope for dt outside of the while loop
     # Simulation parameters
     D,Re,U,Uref = 2^4,250,1,2.0
     L = D*3.5 # diameter of the cylinder compared to the flap
-    center = SA[2.4D,1.85D]
-    # center = SA[3.4D,3.85D]
+    # center = SA[2.4D,1.85D]
+    center = SA[3.4D,3.85D]
     
     # circle for Turek Hron
-    circle = AutoBody((x,t)->√sum(abs2,x.-SA[2D,1.95D])-D/2)
-    # circle = AutoBody((x,t)->√sum(abs2,x.-SA[3D,3.95D])-D/2)
+    # circle = AutoBody((x,t)->√sum(abs2,x.-SA[2D,1.95D])-D/2)
+    circle = AutoBody((x,t)->√sum(abs2,x.-SA[3D,3.95D])-D/2)
     
     # coupling interface
-    interface, body = initialize!(Uref,L,center;dir=[1,-1,-1,1],curves=[circle])
+    interface, body = initialize!(Uref,L,center;dir=[1,-1,-1,1]) #,curves=[circle])
 
     # construct the simulation
     # slow ramp up of the velocity
     a = 4.0
     Ut(i,t::T) where T = i==1 ? convert(T,a*t/L+(1.0+tanh(31.4*(t/L-1.0/a)))/2.0*(1-a*t/L)) : zero(T) # velocity BC
-    sim = Simulation((25D,4D),Ut,L;U,ν=U*D/Re,body,T=Float64,uλ=(i,x)->uBC(i,x,4D,1.0))
-    # sim = Simulation((16D,8D),Ut,L;U,ν=U*D/Re,body,T=Float64)
+    # sim = Simulation((25D,4D),Ut,L;U,ν=U*D/Re,body,T=Float64,uλ=(i,x)->uBC(i,x,4D,1.0))
+    sim = Simulation((16D,8D),Ut,L;U,ν=U*D/Re,body,T=Float64)
     store = Store(sim) # allows checkpointing
-
+    write!(wr, sim) # write the initial state
+    @show sim.body.bodies[1].curve.pnts
+    @show sim.body.bodies[2].curve.pnts
+    @show sim.body.bodies[3].curve.pnts
+    @show sim.body.bodies[4].curve.pnts
     # simulations time
     iter,every = 0,20 # for outputing VTK file
     results = []
@@ -114,7 +118,7 @@ let # setting local scope for dt outside of the while loop
         # if we have converged, save if required
         if PreCICE.isTimeWindowComplete()
             mod(iter,every)==0 && write!(wr, sim)
-            push!(results,[sum(@view(sim.flow.Δt[1:end-1]))*interface.U/sim.L,sim.body.bodies[1].surf.pnts[2,end]])
+            push!(results,[sum(@view(sim.flow.Δt[1:end-1]))*interface.U/sim.L,sim.body.bodies[1].curve.pnts[2,end]])
             iter += 1
         end
     end
